@@ -4,8 +4,8 @@ import threading
 import time
 from typing import Tuple
 
-HOST = socket.gethostbyname(socket.gethostname()) # '127.0.0.1'
-PORT = 21  # command port
+HOST_ADDR = socket.gethostbyname(socket.gethostname())  # '127.0.0.1'
+PORT = 44321  # command port
 CWD = "."  # os.getenv('HOME')
 STOP = False
 
@@ -19,7 +19,7 @@ def log(message):
 
 
 # checks authorization
-def authorize(func):
+def priviliged_action(func):
     def func_wrapper(self, arg):
         if not self.is_authenticated:
             self.send_command('530 User not logged in.')
@@ -40,8 +40,8 @@ class FtpServer(threading.Thread):
         self.username = ""
         self.password = ""
         self.repr_type = ""
-        self.server_listen_socket: socket.socket = None
-        self.data_socket: socket.socket = None
+        self.server_listen_socket = None
+        self.data_socket = None
 
         # For DATA PORT
         self.data_socket_addr = ""
@@ -141,7 +141,7 @@ class FtpServer(threading.Thread):
             self.password = password
         self.is_authenticated = True
 
-    @authorize
+    @priviliged_action
     def TYPE(self, repr_type):
         self.repr_type = repr_type
         if self.repr_type == 'I':
@@ -151,18 +151,18 @@ class FtpServer(threading.Thread):
         else:
             self.send_command(f"501 Syntax error: type '{repr_type}' not found.")
 
-    @authorize
+    @priviliged_action
     def PASV(self, arg):
         self.is_passive_mode = True
         self.server_listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_listen_socket.bind((HOST, 0))
+        self.server_listen_socket.bind((HOST_ADDR, 0))
         self.server_listen_socket.listen(1)
         addr, port = self.server_listen_socket.getsockname()
         address_string = ','.join(addr.split('.'))
         self.send_command(f'227 Entering Passive Mode ({address_string},{port >> 8 & 0xFF},{port & 0xFF}).')
 
-    @authorize
+    @priviliged_action
     def LIST(self, dirpath):
         if not dirpath:
             fullpath = os.path.abspath(self.current_dir)
@@ -175,7 +175,7 @@ class FtpServer(threading.Thread):
         if not os.path.exists(fullpath):
             self.send_command('550 LIST failed: path does not exist.')
         else:
-            self.send_command('150 Here is listing.')
+            self.send_command('150 file OK, listing.')
             self.start_datasocket()
             if not os.path.isdir(fullpath):
                 filename = fullpath
@@ -189,9 +189,9 @@ class FtpServer(threading.Thread):
                     info = os.stat(filename)
                     self.send_data(f"{rights} {info.st_nlink} {info.st_uid} {info.st_gid} {info.st_size} {time.strftime('%b %d %H:%M', time.gmtime(info.st_mtime))} {os.path.basename(filename)}")
             self.stop_datasocket()
-            self.send_command('226 List done.')
+            self.send_command('226 listing done.')
 
-    @authorize
+    @priviliged_action
     def PORT(self, cmd):
         if self.is_passive_mode:
             self.server_listen_socket.close()
@@ -205,14 +205,13 @@ class FtpServer(threading.Thread):
         self.data_socket_port = new_datasocket_port
         self.send_command('200 Port set.')
 
-    @authorize
+    @priviliged_action
     def RETR(self, filename):
         pathname = os.path.join(self.current_dir, filename)
         if not os.path.exists(pathname):
             self.send_command('550 File not found.')
             return
 
-        file = None
         try:
             if self.repr_type == 'I':
                 file = open(pathname, 'rb')
@@ -236,28 +235,81 @@ class FtpServer(threading.Thread):
         self.stop_datasocket()
         self.send_command('226 Transfer complete.')
 
-    @authorize
+    @priviliged_action
     def PWD(self, arg):
         full_path = os.path.abspath(self.current_dir)
         self.send_command(f'257 "{full_path}"')
 
 
-    @authorize
+    @priviliged_action
     def CWD(self, dirname):
-        if os.path.exists(dirname) and os.path.isdir(dirname):
-            self.current_dir = dirname
+        fullpath = dirname if os.path.isabs(dirname) else os.path.join(self.current_dir, dirname)
+        if os.path.exists(fullpath) and os.path.isdir(fullpath):
+            self.current_dir = fullpath
         else:
-            fullpath = os.path.join(self.current_dir, dirname)
-            if os.path.exists(fullpath) and os.path.isdir(fullpath):
-                self.current_dir = fullpath
+            self.send_command('550 directory does not exist.')
+            return
+
+        self.send_command('250 changed directory successfully.')
+
+    @priviliged_action
+    def STOR(self, path: str):
+        fullpath = os.path.join(self.current_dir, path) if not os.path.isabs(path) else path
+
+        if os.path.exists(fullpath):
+            self.send_command("550 file already exists.")
+            return
+
+        file = None
+        try:
+            if self.repr_type == 'I':
+                file = open(fullpath, 'wb')
             else:
-                self.send_command('550 CWD failed Directory not exists.')
-                return
+                file = open(fullpath, 'w')
+        except OSError as e:
+            self.send_command("550 internal server error.")
+            log(f"STOR error: {e}")
 
-        self.send_command('250 CWD Command successful.')
+        self.send_command('150 Opening data connection.')
+        self.start_datasocket()
+        while True:
+            data = self.data_socket.recv(1024)
+            if not data:
+                break
+            file.write(data)
+        file.close()
+        self.stop_datasocket()
+        self.send_command('226 Transfer complete.')
 
+    @priviliged_action
+    def MKD(self, dir: str):
+        fullpath = dir if os.path.isabs(dir) else os.path.join(self.current_dir, dir)
+        if os.path.exists(fullpath) and os.path.isdir(fullpath):
+            self.send_command('550 directory already exists.')
+            return
 
-    #TODO: SIZE, CWD, MDTM
+        try:
+            os.mkdir(fullpath)
+            self.send_command('257 directory created')
+        except OSError as e:
+            self.send_command('550 internal server error')
+            log(f"MKD error: {e}")
+
+    @priviliged_action
+    def RMD(self, dir: str):
+        fullpath = dir if os.path.isabs(dir) else os.path.join(self.current_dir, dir)
+        if not os.path.exists(fullpath) or not os.path.isdir(fullpath):
+            self.send_command('550 directory not found.')
+            return
+
+        try:
+            os.rmdir(fullpath)
+            self.send_command('250 directory removed')
+        except OSError as e:
+            self.send_command('550 internal server error')
+            log(f"RMD error: {e}")
+
+    #TODO: DELE
 
     def HELP(self, arg):
         help = """
@@ -266,14 +318,13 @@ class FtpServer(threading.Thread):
         self.send_command(help)
 
     def QUIT(self, arg):
-        self.send_command('221 Goodbye.')
+        self.send_command('221 Bye bye.')
 
 
 def server_listener():
-    global listen_sock
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listen_sock.bind((HOST, PORT))
+    listen_sock.bind((HOST_ADDR, PORT))
     listen_sock.listen(5)
 
     log(f"Listening on: {listen_sock.getsockname()}")
@@ -290,8 +341,3 @@ if __name__ == "__main__":
     log('FTP server started')
     listen_thread = threading.Thread(target=server_listener)
     listen_thread.start()
-
-    if input().lower() == "q":
-        STOP = True
-        listen_sock.close()
-        log('Server closed')
