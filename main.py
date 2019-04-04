@@ -192,12 +192,12 @@ class FtpServer(threading.Thread):
             self.send_command('226 listing done.')
 
     @priviliged_action
-    def PORT(self, cmd):
+    def PORT(self, host):
         if self.is_passive_mode:
             self.server_listen_socket.close()
             self.is_passive_mode = False
 
-        new_host_bytes = cmd[5:].split(',')
+        new_host_bytes = host[5:].split(',')
         new_datasocket_addr = '.'.join(new_host_bytes[:4])
         new_datasocket_port = (int(new_host_bytes[4]) << 8) + int(new_host_bytes[5])
 
@@ -314,6 +314,18 @@ class FtpServer(threading.Thread):
     def HELP(self, arg):
         help = """
             214
+            USER <username>
+            PASS <password>
+            TYPE <A/I>
+            PASV 
+            LIST <path>
+            PORT <host>
+            RETR <file>
+            PWD
+            CWD <path>
+            STOR <file>
+            MKD <path>
+            RMD <path>     
             """
         self.send_command(help)
 
