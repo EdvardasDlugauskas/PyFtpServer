@@ -309,7 +309,19 @@ class FtpServer(threading.Thread):
             self.send_command('550 internal server error')
             log(f"RMD error: {e}")
 
-    #TODO: DELE
+    @priviliged_action
+    def DELE(self, file):
+        fullpath = file if os.path.isabs(file) else os.path.join(self.current_dir, file)
+        if not os.path.exists(fullpath) or not os.path.isfile(fullpath):
+            self.send_command('550 file not found.')
+            return
+
+        try:
+            os.remove(fullpath)
+            self.send_command('250 file removed')
+        except OSError as e:
+            self.send_command('550 internal server error')
+            log(f'DELE error: {e}')
 
     def HELP(self, arg):
         help = """
@@ -325,7 +337,8 @@ class FtpServer(threading.Thread):
             CWD <path>
             STOR <file>
             MKD <path>
-            RMD <path>     
+            RMD <path>  
+            DELE <file>   
             """
         self.send_command(help)
 
@@ -353,3 +366,20 @@ if __name__ == "__main__":
     log('FTP server started')
     listen_thread = threading.Thread(target=server_listener)
     listen_thread.start()
+
+
+'''
+RIP/OSPF? Marsrutizavimo protokolai
+funkcijos:
+
+SEND ROUTING TABLE
+RECEIVE ROUTING TABLE
+
+SEND DATA
+RECEIVE DATA
+
+ADD link/router
+REMOVE link/router
+
+live simulation
+'''
